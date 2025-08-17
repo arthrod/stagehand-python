@@ -12,7 +12,10 @@ class StagehandConfig(BaseModel):
     Configuration for the Stagehand client.
 
     Attributes:
-        env (str): Environment type. 'BROWSERBASE' for remote usage
+        env (str): Environment type. 'BROWSERBASE' for remote usage,
+            'LOCAL' for a standard local browser, 'ARC' to launch the Arc
+            browser in debug mode, or 'ARC_PERSIST' to attach to an existing
+            Arc browser session.
         api_key (Optional[str]): BrowserbaseAPI key for authentication.
         project_id (Optional[str]): Browserbase Project identifier.
         api_url (Optional[str]): Stagehand API URL.
@@ -35,7 +38,7 @@ class StagehandConfig(BaseModel):
         experimental (bool): Enable experimental features.
     """
 
-    env: Literal["BROWSERBASE", "LOCAL"] = "BROWSERBASE"
+    env: Literal["BROWSERBASE", "LOCAL", "ARC", "ARC_PERSIST"] = "BROWSERBASE"
     api_key: Optional[str] = Field(
         None, alias="apiKey", description="Browserbase API key for authentication"
     )

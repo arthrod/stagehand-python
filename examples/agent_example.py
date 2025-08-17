@@ -36,7 +36,7 @@ async def main():
     # Build a unified configuration object for Stagehand
     config = StagehandConfig(
         env="BROWSERBASE",
-        # env="LOCAL",
+        # env="LOCAL" or "ARC" or "ARC_PERSIST",
         api_key=os.getenv("BROWSERBASE_API_KEY"),
         project_id=os.getenv("BROWSERBASE_PROJECT_ID"),
         model_name="gpt-4o",

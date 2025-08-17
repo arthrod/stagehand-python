@@ -124,7 +124,7 @@ class Companies(BaseModel):
 async def main():
     # Create configuration
     config = StagehandConfig(
-        env = "BROWSERBASE", # or LOCAL
+        env = "BROWSERBASE", # or LOCAL or ARC or ARC_PERSIST
         api_key=os.getenv("BROWSERBASE_API_KEY"),
         project_id=os.getenv("BROWSERBASE_PROJECT_ID"),
         model_name="google/gemini-2.5-flash-preview-05-20",
