@@ -16,7 +16,7 @@ from playwright.async_api import (
 from playwright.async_api import Page as PlaywrightPage
 
 from .agent import Agent
-from .api import _create_session, _execute
+from .api import _attach_arc_session, _create_arc_session, _create_session, _execute
 from .browser import (
     cleanup_browser_resources,
     connect_browserbase_browser,
@@ -204,14 +204,17 @@ class Stagehand:
         self._local_user_data_dir_temp: Optional[Path] = (
             None  # To store path if created temporarily
         )
+        self._arc_process = None  # Handle to Arc browser process
 
         # Initialize metrics tracking
         self.metrics = StagehandMetrics()
         self._inference_start_time = 0  # To track inference time
 
         # Validate env
-        if self.env not in ["BROWSERBASE", "LOCAL"]:
-            raise ValueError("env must be either 'BROWSERBASE' or 'LOCAL'")
+        if self.env not in ["BROWSERBASE", "LOCAL", "ARC", "ARC_PERSIST"]:
+            raise ValueError(
+                "env must be 'BROWSERBASE', 'LOCAL', 'ARC', or 'ARC_PERSIST'"
+            )
 
         # Initialize the centralized logger with the specified verbosity
         self.on_log = self.config.logger or default_log_handler
@@ -262,7 +265,7 @@ class Stagehand:
         self.context: Optional[StagehandContext] = None
         self.use_api = self.config.use_api
         self.experimental = self.config.experimental
-        if self.experimental or self.env == "LOCAL":
+        if self.experimental or self.env in ["LOCAL", "ARC", "ARC_PERSIST"]:
             self.use_api = False
         if (
             self.browserbase_session_create_params
@@ -475,8 +478,10 @@ class Stagehand:
         """
         Public init() method.
         For BROWSERBASE: Creates or resumes the server session, starts Playwright, connects to remote browser.
-        For LOCAL: Starts Playwright, launches a local persistent context or connects via CDP.
-        Sets up self.page in both cases.
+        For LOCAL, ARC, and ARC_PERSIST: Starts Playwright, launches a local persistent
+        context or connects via CDP. ARC mode launches the Arc browser in debug mode,
+        while ARC_PERSIST attaches to an existing Arc session.
+        Sets up self.page in all cases.
         """
         if self._initialized:
             self.logger.debug("Stagehand is already initialized; skipping init()")
@@ -533,6 +538,49 @@ class Stagehand:
             except Exception:
                 await self.close()
                 raise
+
+        elif self.env == "ARC":
+            # Launch Arc in debug mode and connect via CDP
+            await self._create_arc_session()
+
+            try:
+                (
+                    self._browser,
+                    self._context,
+                    self.context,
+                    self._page,
+                    self._local_user_data_dir_temp,
+                ) = await connect_local_browser(
+                    self._playwright,
+                    self.local_browser_launch_options,
+                    self,
+                    self.logger,
+                )
+                self._playwright_page = self._page._page
+            except Exception:
+                await self.close()
+                raise
+        elif self.env == "ARC_PERSIST":
+            # Attach to an existing Arc debug session and connect via CDP
+            await self._attach_arc_session()
+
+            try:
+                (
+                    self._browser,
+                    self._context,
+                    self.context,
+                    self._page,
+                    self._local_user_data_dir_temp,
+                ) = await connect_local_browser(
+                    self._playwright,
+                    self.local_browser_launch_options,
+                    self,
+                    self.logger,
+                )
+                self._playwright_page = self._page._page
+            except Exception:
+                await self.close()
+                raise
         else:
             # Should not happen due to __init__ validation
             raise RuntimeError(f"Invalid env value: {self.env}")
@@ -563,7 +611,8 @@ class Stagehand:
         """
         Clean up resources.
         For BROWSERBASE: Ends the session on the server and stops Playwright.
-        For LOCAL: Closes the local context, stops Playwright, and removes temporary directories.
+        For LOCAL, ARC, and ARC_PERSIST: Closes the local context, stops Playwright, and removes
+        temporary directories. ARC mode also terminates the Arc browser process.
         """
         if self._closed:
             return
@@ -607,6 +656,17 @@ class Stagehand:
             self._local_user_data_dir_temp,
             self.logger,
         )
+
+        # Terminate Arc browser process if running
+        if self.env == "ARC" and self._arc_process:
+            try:
+                self.logger.debug("Terminating Arc browser process...")
+                self._arc_process.terminate()
+                await self._arc_process.wait()
+            except Exception:
+                pass
+            finally:
+                self._arc_process = None
 
         self._closed = True
 
@@ -727,7 +787,7 @@ class Stagehand:
         Returns:
             A LivePageProxy that delegates to the active StagehandPage or None if not initialized
         """
-        if not self._initialized:
+        if not self._initialized and not self._live_page_proxy:
             return None
 
         # Create the live page proxy if it doesn't exist
@@ -736,7 +796,14 @@ class Stagehand:
 
         return self._live_page_proxy
 
+    @page.setter
+    def page(self, value: Optional[StagehandPage]):
+        """Allow tests or advanced users to override the live page proxy."""
+        self._live_page_proxy = value
+
 
 # Bind the imported API methods to the Stagehand class
 Stagehand._create_session = _create_session
+Stagehand._create_arc_session = _create_arc_session
+Stagehand._attach_arc_session = _attach_arc_session
 Stagehand._execute = _execute

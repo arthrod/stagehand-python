@@ -1,11 +1,14 @@
+import asyncio
 import json
+import uuid
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
+from .arc import launch_arc_browser
 from .utils import convert_dict_keys_to_camel_case
 
-__all__ = ["_create_session", "_execute"]
+__all__ = ["_create_session", "_create_arc_session", "_attach_arc_session", "_execute"]
 
 
 async def _create_session(self):
@@ -97,6 +100,67 @@ async def _create_session(self):
         raise RuntimeError(f"Invalid response format: {resp.text}")
 
     self.session_id = data["data"]["sessionId"]
+
+
+async def _create_arc_session(self):
+    """Launch Arc browser in remote debugging mode and set up a local session.
+
+    This method starts the Arc browser using its default macOS installation path
+    and enables the remote debugging protocol. A unique session ID is generated
+    for use throughout Stagehand just like in Browserbase mode, but no external
+    server is contacted. The launched browser can then be accessed via CDP using
+    the generated debugging port.
+    """
+
+    debug_port = 9222
+
+    self.logger.info("Launching Arc browser in debug mode...")
+
+    # Start Arc with remote debugging enabled
+    self._arc_process = await launch_arc_browser(debug_port)
+
+    # Give the browser a moment to start listening on the port
+    await asyncio.sleep(2)
+
+    # Generate a session ID if one was not provided
+    if not self.session_id:
+        self.session_id = str(uuid.uuid4())
+
+    # Ensure subsequent calls connect via CDP to the launched Arc browser
+    if hasattr(self, "local_browser_launch_options"):
+        self.local_browser_launch_options.setdefault(
+            "cdp_url", f"http://localhost:{debug_port}"
+        )
+    else:
+        self.local_browser_launch_options = {
+            "cdp_url": f"http://localhost:{debug_port}"
+        }
+
+
+async def _attach_arc_session(self):
+    """Attach to an existing Arc browser session running in debug mode.
+
+    This helper assumes the Arc browser is already running with the remote
+    debugging protocol enabled (typically on port 9222). It configures Stagehand
+    to connect via CDP without launching a new browser process, allowing reuse
+    of authenticated sessions.
+    """
+
+    debug_port = 9222
+
+    self.logger.info("Attaching to existing Arc browser session...")
+
+    if not self.session_id:
+        self.session_id = str(uuid.uuid4())
+
+    if hasattr(self, "local_browser_launch_options"):
+        self.local_browser_launch_options.setdefault(
+            "cdp_url", f"http://localhost:{debug_port}"
+        )
+    else:
+        self.local_browser_launch_options = {
+            "cdp_url": f"http://localhost:{debug_port}"
+        }
 
 
 async def _execute(self, method: str, payload: dict[str, Any]) -> Any:
