@@ -1,11 +1,15 @@
+import asyncio
 import json
+import uuid
 from datetime import datetime
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
+from urllib.parse import urlparse
 
+from .arc import launch_arc_browser
 from .utils import convert_dict_keys_to_camel_case
 
-__all__ = ["_create_session", "_execute"]
+__all__ = ["_create_session", "_create_arc_session", "_attach_arc_session", "_execute"]
 
 
 async def _create_session(self):
@@ -97,6 +101,120 @@ async def _create_session(self):
         raise RuntimeError(f"Invalid response format: {resp.text}")
 
     self.session_id = data["data"]["sessionId"]
+
+
+async def _create_arc_session(self):
+    """Launch Arc browser in remote debugging mode and set up a local session.
+
+    This method starts the Arc browser using its default macOS installation path
+    and enables the remote debugging protocol. A unique session ID is generated
+    for use throughout Stagehand just like in Browserbase mode, but no external
+    server is contacted. The launched browser can then be accessed via CDP using
+    the generated debugging port.
+    """
+
+    default_port = 9222
+    # Determine desired CDP URL / port from launch options if provided
+    cdp_url = None
+    if hasattr(self, "local_browser_launch_options"):
+        cdp_url = self.local_browser_launch_options.get("cdp_url")
+    if cdp_url:
+        parsed = urlparse(cdp_url)
+        debug_port = parsed.port or default_port
+    else:
+        debug_port = default_port
+        cdp_url = f"http://localhost:{debug_port}"
+
+    self.logger.info("Launching Arc browser in debug mode...")
+
+    arc_available = True
+    try:
+        # Start Arc with remote debugging enabled
+        self._arc_process = await launch_arc_browser(debug_port)
+
+        # Give the browser a moment to start listening on the port
+        await asyncio.sleep(2)
+    except FileNotFoundError:
+        self.logger.log(
+            "Arc browser not found; falling back to local Chromium.", level=1
+        )
+        self._arc_process = None
+        arc_available = False
+    except Exception as e:
+        self.logger.log(
+            f"Failed to launch Arc browser ({e}); falling back to local Chromium.",
+            level=1,
+        )
+        self._arc_process = None
+        arc_available = False
+
+    # Generate a session ID if one was not provided
+    if not self.session_id:
+        self.session_id = str(uuid.uuid4())
+
+    if arc_available:
+        # Ensure subsequent calls connect via CDP to the launched Arc browser
+        if hasattr(self, "local_browser_launch_options"):
+            self.local_browser_launch_options.setdefault("cdp_url", cdp_url)
+        else:
+            self.local_browser_launch_options = {"cdp_url": cdp_url}
+    else:
+        # Remove any CDP configuration so a standard Chromium session is launched
+        if hasattr(self, "local_browser_launch_options"):
+            self.local_browser_launch_options.pop("cdp_url", None)
+        else:
+            self.local_browser_launch_options = {}
+
+
+async def _attach_arc_session(self):
+    """Attach to an existing Arc browser debug session.
+
+    This helper configures Stagehand to connect to a pre-launched Arc browser
+    running with the remote debugging protocol enabled. Unlike
+    :func:`_create_arc_session`, this method does not start a new browser
+    process, allowing users to leverage already-authenticated Arc sessions.
+    """
+
+    default_port = 9222
+
+    # Determine CDP URL/port from launch options if provided
+    cdp_url = None
+    if hasattr(self, "local_browser_launch_options"):
+        cdp_url = self.local_browser_launch_options.get("cdp_url")
+    if cdp_url:
+        parsed = urlparse(cdp_url)
+        debug_port = parsed.port or default_port
+    else:
+        debug_port = default_port
+        cdp_url = f"http://localhost:{debug_port}"
+
+    # Generate a session ID if one was not provided
+    if not self.session_id:
+        self.session_id = str(uuid.uuid4())
+
+    # Check if an Arc debug session is reachable; otherwise fall back to Chromium
+    version_url = urlparse(cdp_url)._replace(path="/json/version").geturl()
+    try:
+        resp = await self._client.get(version_url, timeout=1.0)
+        arc_running = resp.status_code == 200
+    except Exception:
+        arc_running = False
+
+    if arc_running:
+        # Ensure we have a CDP URL pointing to the running Arc instance
+        if hasattr(self, "local_browser_launch_options"):
+            self.local_browser_launch_options.setdefault("cdp_url", cdp_url)
+        else:
+            self.local_browser_launch_options = {"cdp_url": cdp_url}
+    else:
+        self.logger.log(
+            "Arc debug session not reachable; falling back to local Chromium.",
+            level=1,
+        )
+        if hasattr(self, "local_browser_launch_options"):
+            self.local_browser_launch_options.pop("cdp_url", None)
+        else:
+            self.local_browser_launch_options = {}
 
 
 async def _execute(self, method: str, payload: dict[str, Any]) -> Any:
